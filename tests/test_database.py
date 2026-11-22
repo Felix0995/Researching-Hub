@@ -22,6 +22,7 @@ import pytest
 from researchhub.db import (
     EXPECTED_TABLES,
     SCHEMA_VERSION,
+    SchemaMigrationError,
     check_integrity,
     get_connection,
     get_schema_version,
@@ -543,5 +544,116 @@ def test_failed_operations_rollback_and_safety(tmp_path: Path) -> None:
         is_healthy, msgs = check_integrity(db_file)
         assert is_healthy is True
         assert msgs == ["ok"]
+    finally:
+        con.close()
+
+
+def test_schema_migration_error_on_incompatible_version(tmp_path: Path) -> None:
+    """Fix 1 regression: inits on incompatible versions raise SchemaMigrationError."""
+    db_file = tmp_path / "test_migration_guard.sqlite"
+    init_db(db_file)
+
+    # Simulate unknown newer schema version
+    con = get_connection(db_file)
+    try:
+        con.execute("PRAGMA user_version = 999;")
+        con.commit()
+    finally:
+        con.close()
+
+    # Calling init_db on version 999 must raise SchemaMigrationError
+    with pytest.raises(SchemaMigrationError) as exc_newer:
+        init_db(db_file)
+    assert "newer than application schema version" in str(exc_newer.value)
+
+
+def test_older_version_without_migration_raises_and_preserves_data(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fix 1 regression: older schema raises SchemaMigrationError and preserves data."""
+    import researchhub.db.manager as db_manager
+
+    db_file = tmp_path / "test_older_version.sqlite"
+    init_db(db_file)
+
+    con = get_connection(db_file)
+    try:
+        con.execute(
+            "INSERT INTO tags (name, created_at) VALUES ('legacy-tag', '2026-11-22T20:00:00Z');"
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    # Simulate future application where SCHEMA_VERSION = 2 but no migration registered
+    monkeypatch.setattr(db_manager, "SCHEMA_VERSION", 2)
+
+    with pytest.raises(SchemaMigrationError) as exc_info:
+        db_manager.init_db(db_file)
+
+    assert "older than application schema version 2" in str(exc_info.value)
+    assert "No automated migration is registered" in str(exc_info.value)
+
+    # Verify existing database was untouched and data is preserved
+    con2 = get_connection(db_file)
+    try:
+        assert get_schema_version(con2) == 1  # Version was NOT bumped!
+        row = con2.execute("SELECT name FROM tags WHERE name = 'legacy-tag';").fetchone()
+        assert row is not None
+        assert row["name"] == "legacy-tag"
+    finally:
+        con2.close()
+
+
+def test_duplicate_root_domains_prevented_and_child_domains_allowed(tmp_path: Path) -> None:
+    """Fix 3 regression: prevents duplicate root domains, allows duplicate child under parents."""
+    db_file = tmp_path / "test_domains_unique.sqlite"
+    init_db(db_file)
+
+    con = get_connection(db_file)
+    try:
+        # 1. Insert root domain
+        cur = con.execute(
+            "INSERT INTO domains (name, parent_id, created_at) VALUES ('MBA', NULL, 't');"
+        )
+        mba_id = cur.lastrowid
+
+        # 2. Duplicate root domain must fail
+        with pytest.raises(sqlite3.IntegrityError):
+            con.execute(
+                "INSERT INTO domains (name, parent_id, created_at) VALUES ('MBA', NULL, 't');"
+            )
+            con.commit()
+
+        # 3. Insert second distinct root domain
+        cur = con.execute(
+            """
+            INSERT INTO domains (name, parent_id, created_at)
+            VALUES ('Computer Science', NULL, 't');
+            """
+        )
+        cs_id = cur.lastrowid
+
+        # 4. Same child domain name under DIFFERENT root parents is allowed
+        con.execute(
+            "INSERT INTO domains (name, parent_id, created_at) VALUES ('Data Analytics', ?, 't');",
+            (mba_id,),
+        )
+        con.execute(
+            "INSERT INTO domains (name, parent_id, created_at) VALUES ('Data Analytics', ?, 't');",
+            (cs_id,),
+        )
+        con.commit()
+
+        # 5. Duplicate child domain under SAME parent must fail
+        with pytest.raises(sqlite3.IntegrityError):
+            con.execute(
+                """
+                INSERT INTO domains (name, parent_id, created_at)
+                VALUES ('Data Analytics', ?, 't');
+                """,
+                (mba_id,),
+            )
+            con.commit()
     finally:
         con.close()

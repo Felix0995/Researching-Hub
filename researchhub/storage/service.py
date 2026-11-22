@@ -214,22 +214,20 @@ class StorageService:
             if staged_hash != sha256 or staged_size != size_bytes:
                 raise StorageIntegrityError("Checksum verification failed during staged copy.")
 
-            # Atomic replace into final destination
-            os.replace(staging_path, final_dest)
+            return self._finalize_staged_file(
+                staging_path=staging_path,
+                final_dest=final_dest,
+                stored_relpath=stored_relpath,
+                sha256=sha256,
+                orig_name=orig_name,
+                file_type=file_type,
+                mime_type=mime_type,
+                size_bytes=size_bytes,
+            )
         except Exception:
             if staging_path.exists():
                 staging_path.unlink(missing_ok=True)
             raise
-
-        return StoreResult(
-            sha256=sha256,
-            stored_relpath=stored_relpath,
-            original_filename=orig_name,
-            file_type=file_type,
-            mime_type=mime_type,
-            size_bytes=size_bytes,
-            is_duplicate=False,
-        )
 
     def store_stream(
         self,
@@ -282,8 +280,57 @@ class StorageService:
             final_dest = dest_dir / f"{sha256}{ext}"
             stored_relpath = f"{prefix}/{sha256}{ext}"
 
-            os.replace(staging_path, final_dest)
+            return self._finalize_staged_file(
+                staging_path=staging_path,
+                final_dest=final_dest,
+                stored_relpath=stored_relpath,
+                sha256=sha256,
+                orig_name=orig_name,
+                file_type=file_type,
+                mime_type=mime_type,
+                size_bytes=size_bytes,
+            )
+        except Exception:
+            if staging_path.exists():
+                staging_path.unlink(missing_ok=True)
+            raise
 
+    def _finalize_staged_file(
+        self,
+        staging_path: Path,
+        final_dest: Path,
+        stored_relpath: str,
+        sha256: str,
+        orig_name: str,
+        file_type: str,
+        mime_type: str,
+        size_bytes: int,
+    ) -> StoreResult:
+        """Transfer staging file to final destination without overwriting existing files.
+
+        Handles race conditions, duplicate detection, and conflicting existing files.
+        """
+        if final_dest.exists():
+            staging_path.unlink(missing_ok=True)
+            existing_hash, _ = self.compute_hash(final_dest)
+            if existing_hash == sha256:
+                return StoreResult(
+                    sha256=sha256,
+                    stored_relpath=stored_relpath,
+                    original_filename=orig_name,
+                    file_type=file_type,
+                    mime_type=mime_type,
+                    size_bytes=size_bytes,
+                    is_duplicate=True,
+                )
+            raise StorageIntegrityError(
+                f"Destination file already exists with conflicting checksum at '{stored_relpath}': "
+                f"expected {sha256}, existing is {existing_hash}."
+            )
+
+        try:
+            os.link(staging_path, final_dest)
+            staging_path.unlink(missing_ok=True)
             return StoreResult(
                 sha256=sha256,
                 stored_relpath=stored_relpath,
@@ -293,10 +340,23 @@ class StorageService:
                 size_bytes=size_bytes,
                 is_duplicate=False,
             )
-        except Exception:
-            if staging_path.exists():
-                staging_path.unlink(missing_ok=True)
-            raise
+        except FileExistsError:
+            staging_path.unlink(missing_ok=True)
+            existing_hash, _ = self.compute_hash(final_dest)
+            if existing_hash == sha256:
+                return StoreResult(
+                    sha256=sha256,
+                    stored_relpath=stored_relpath,
+                    original_filename=orig_name,
+                    file_type=file_type,
+                    mime_type=mime_type,
+                    size_bytes=size_bytes,
+                    is_duplicate=True,
+                )
+            raise StorageIntegrityError(
+                f"Destination file already exists with conflicting checksum at '{stored_relpath}': "
+                f"expected {sha256}, existing is {existing_hash}."
+            )
 
     def verify_file_integrity(self, stored_relpath: str, expected_sha256: str) -> bool:
         """Verify that a stored file matches its expected SHA-256 checksum."""

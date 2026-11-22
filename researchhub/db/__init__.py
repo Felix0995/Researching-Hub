@@ -2,6 +2,8 @@
 
 from researchhub.db.connection import get_connection, transaction
 from researchhub.db.manager import (
+    DatabaseError,
+    SchemaMigrationError,
     check_integrity,
     get_schema_version,
     get_table_names,
@@ -20,4 +22,6 @@ __all__ = [
     "rebuild_fts_index",
     "SCHEMA_VERSION",
     "EXPECTED_TABLES",
+    "DatabaseError",
+    "SchemaMigrationError",
 ]

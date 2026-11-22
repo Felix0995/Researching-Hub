@@ -19,6 +19,14 @@ logger = logging.getLogger(__name__)
 PathLike = Union[Path, str]
 
 
+class DatabaseError(Exception):
+    """Base exception for database errors."""
+
+
+class SchemaMigrationError(DatabaseError):
+    """Raised when the database schema version is incompatible and requires migration."""
+
+
 def init_db(db_path: PathLike | None = None) -> int:
     """Initialize database schema idempotently.
 
@@ -26,6 +34,7 @@ def init_db(db_path: PathLike | None = None) -> int:
     - If user_version == 0, executes full DDL and sets user_version to SCHEMA_VERSION.
     - If user_version == SCHEMA_VERSION, preserves existing data and returns.
     - Never deletes or resets existing database tables.
+    - If schema version does not match, raises SchemaMigrationError and preserves data.
     """
     if db_path is None:
         target_path: PathLike = config.database_path
@@ -67,18 +76,18 @@ def init_db(db_path: PathLike | None = None) -> int:
             return current_version
 
         if current_version < SCHEMA_VERSION:
-            logger.info("Migrating database from version %d to %d", current_version, SCHEMA_VERSION)
-            # Placeholder for incremental migrations in future phases
-            with transaction(con):
-                con.execute(f"PRAGMA user_version = {SCHEMA_VERSION};")
-            return SCHEMA_VERSION
+            raise SchemaMigrationError(
+                f"Database schema at {target_path} is version {current_version}, "
+                f"which is older than application schema version {SCHEMA_VERSION}. "
+                "No automated migration is registered for this version. "
+                "The database has been left unmodified to prevent data loss."
+            )
 
-        logger.warning(
-            "Database version %d is higher than application schema version %d",
-            current_version,
-            SCHEMA_VERSION,
+        raise SchemaMigrationError(
+            f"Database schema at {target_path} is version {current_version}, "
+            f"which is newer than application schema version {SCHEMA_VERSION}. "
+            "Please update the application."
         )
-        return current_version
     finally:
         con.close()
 

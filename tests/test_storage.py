@@ -149,3 +149,86 @@ def test_missing_file_handling(tmp_path: Path) -> None:
 
     with pytest.raises(StorageFileNotFoundError):
         list(service.read_chunks("aa/non_existent.pdf"))
+
+
+def test_pre_existing_conflicting_file_raises_and_never_overwrites(tmp_path: Path) -> None:
+    """Fix 2 regression: conflicting file at destination raises StorageIntegrityError."""
+    storage_dir = tmp_path / "storage"
+    service = StorageService(storage_dir=storage_dir)
+
+    # 1. Source file to store
+    new_content = b"New Incoming Research Paper Content"
+    source = tmp_path / "incoming.pdf"
+    source.write_bytes(new_content)
+    new_sha, _ = service.compute_hash(source)
+
+    # 2. Simulate pre-existing conflicting file already sitting at destination
+    prefix = new_sha[:2]
+    dest_dir = storage_dir / prefix
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    destination_file = dest_dir / f"{new_sha}.pdf"
+
+    original_target_bytes = b"Pre-existing different or corrupted content bytes"
+    destination_file.write_bytes(original_target_bytes)
+
+    # 3. Storing incoming file must fail, must NOT overwrite existing destination file
+    with pytest.raises(StorageIntegrityError) as exc_info:
+        service.store_file(source)
+
+    err_msg = str(exc_info.value)
+    assert "conflicting checksum" in err_msg or "File integrity mismatch" in err_msg
+
+    # 4. Verify original destination file was NOT overwritten
+    assert destination_file.read_bytes() == original_target_bytes
+
+    # 5. Verify staging directory is cleaned up
+    staging_files = list((storage_dir / ".staging").iterdir())
+    assert len(staging_files) == 0
+
+
+def test_concurrent_same_file_at_destination_returns_duplicate_safely(tmp_path: Path) -> None:
+    """Fix 2 regression: file already linked at destination with same hash is handled safely."""
+    storage_dir = tmp_path / "storage"
+    service = StorageService(storage_dir=storage_dir)
+
+    content = b"Concurrent Identical Research Content"
+    source = tmp_path / "source.pdf"
+    source.write_bytes(content)
+    sha, _ = service.compute_hash(source)
+
+    # Place identical file at destination prior to store
+    prefix = sha[:2]
+    dest_dir = storage_dir / prefix
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest_file = dest_dir / f"{sha}.pdf"
+    dest_file.write_bytes(content)
+
+    # Storing must return is_duplicate=True without raising or corrupting
+    res = service.store_file(source)
+    assert res.is_duplicate is True
+    assert res.sha256 == sha
+    assert dest_file.read_bytes() == content
+
+
+def test_store_stream_conflicting_destination_raises_and_preserves(tmp_path: Path) -> None:
+    """Fix 2 regression: store_stream rejects conflicting destination file without overwriting."""
+    storage_dir = tmp_path / "storage"
+    service = StorageService(storage_dir=storage_dir)
+
+    stream_content = b"Streamed Unique Paper Content"
+    stream_sha = hashlib.sha256(stream_content).hexdigest().lower()
+
+    # Place conflicting file at destination
+    prefix = stream_sha[:2]
+    dest_dir = storage_dir / prefix
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest_file = dest_dir / f"{stream_sha}.pdf"
+    dest_file.write_bytes(b"Conflicting existing bytes")
+
+    with pytest.raises(StorageIntegrityError):
+        service.store_stream(io.BytesIO(stream_content), "stream.pdf")
+
+    # Verify destination file retained its original bytes
+    assert dest_file.read_bytes() == b"Conflicting existing bytes"
+    # Staging clean
+    assert len(list((storage_dir / ".staging").iterdir())) == 0

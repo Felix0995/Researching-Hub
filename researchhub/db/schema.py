@@ -103,11 +103,18 @@ DDL_STATEMENTS: tuple[str, ...] = (
         parent_id INTEGER,
         description TEXT,
         created_at TEXT NOT NULL,
-        UNIQUE (name, parent_id),
         FOREIGN KEY (parent_id) REFERENCES domains(id) ON DELETE SET NULL
     );
     """,
     "CREATE INDEX IF NOT EXISTS idx_domains_parent_id ON domains(parent_id);",
+    (
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_domains_root_name "
+        "ON domains(name) WHERE parent_id IS NULL;"
+    ),
+    (
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_domains_child_name "
+        "ON domains(name, parent_id) WHERE parent_id IS NOT NULL;"
+    ),
 
     # 6. document_domains: N:N relationship
     """
