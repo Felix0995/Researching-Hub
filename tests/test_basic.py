@@ -22,21 +22,21 @@ def test_package_metadata() -> None:
 
 def test_package_submodules_importable() -> None:
     """Verify that all core submodules can be imported cleanly."""
-    import researchhub.db
-    import researchhub.models
-    import researchhub.parsers
-    import researchhub.repositories
-    import researchhub.services
-    import researchhub.storage
-    import researchhub.ui
+    import importlib
 
-    assert researchhub.ui is not None
-    assert researchhub.services is not None
-    assert researchhub.repositories is not None
-    assert researchhub.parsers is not None
-    assert researchhub.storage is not None
-    assert researchhub.db is not None
-    assert researchhub.models is not None
+    submodules = [
+        "researchhub.config",
+        "researchhub.db",
+        "researchhub.models",
+        "researchhub.parsers",
+        "researchhub.repositories",
+        "researchhub.services",
+        "researchhub.storage",
+        "researchhub.ui",
+    ]
+    for mod_name in submodules:
+        mod = importlib.import_module(mod_name)
+        assert mod is not None
 
 
 def test_app_config_defaults() -> None:
