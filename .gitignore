@@ -34,8 +34,8 @@ venv.bak/
 
 # Local Application Data, Databases & User Files (CRITICAL: NEVER COMMIT)
 data/
-storage/
-backups/
+/storage/
+/backups/
 *.db
 *.db-journal
 *.sqlite
